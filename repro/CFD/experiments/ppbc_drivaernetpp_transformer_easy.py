@@ -1,5 +1,6 @@
 import argparse
 import csv
+import hashlib
 import json
 import math
 import os
@@ -26,6 +27,7 @@ from datamodule.point_cloud_datamodule import PointCloudDataModule, PointCloudDa
 from model.transformer import Transformer
 from util.cfd_utils import calc_force_coeff_wrapper
 from util.fabric_utils import seed_everything
+from util.round_checkpoint import RoundCheckpoint
 
 MODEL_CONFIG_FILE = REPO_ROOT / "config" / "model" / "transformer.yaml"
 LOSS_CONFIG_FILE = REPO_ROOT / "config" / "loss" / "cfd_loss_wrapper.yaml"
@@ -165,6 +167,7 @@ def parse_args() -> argparse.Namespace:
         help="Optional per-client batch cap for smoke tests. 0 means no cap.",
     )
     parser.add_argument("--eval-every", type=int, default=1)
+    parser.add_argument("--resume", default="", help="Trusted round checkpoint; use the same configuration")
     return parser.parse_args()
 
 
@@ -464,7 +467,7 @@ def train_client(
     args: argparse.Namespace,
     repo_cfg,
     fabric: Fabric,
-) -> tuple[dict[str, torch.Tensor], float]:
+) -> tuple[dict[str, torch.Tensor], float, int]:
     model = make_model()
     model.load_state_dict(base_state)
     optimizer = make_optimizer(model, repo_cfg)
@@ -509,7 +512,7 @@ def train_client(
     del model
     if fabric.device.type == "cuda":
         torch.cuda.empty_cache()
-    return grad, total_loss / max(total_batches, 1)
+    return grad, total_loss / max(total_batches, 1), total_batches
 
 
 def client_weight(
@@ -703,31 +706,42 @@ def run_fedavg(
     state = clone_state_cpu(initial_state)
     active_clients = [client_id for client_id, indices in enumerate(clients) if indices]
     total_samples = sum(len(clients[client_id]) for client_id in active_clients)
-    history = evaluate_state(
-        state,
-        test_dataset,
-        test_records,
-        args,
-        repo_cfg,
-        fabric,
-        datamodule,
-        "fedavg",
-        alpha,
-        0,
-    )
+    checkpoint = RoundCheckpoint(args, "fedavg", alpha)
+    saved = checkpoint.load(None)
+    start_round = 0
+    if saved is not None:
+        state = saved["state"]
+        history = saved["history"]
+        start_round = saved["round"]
+    else:
+        history = evaluate_state(
+            state,
+            test_dataset,
+            test_records,
+            args,
+            repo_cfg,
+            fabric,
+            datamodule,
+            "fedavg",
+            alpha,
+            0,
+        )
+        checkpoint.save(0, state, history)
 
-    for round_idx in range(1, args.rounds + 1):
+    for round_idx in range(start_round + 1, args.rounds + 1):
         aggregate_update = zero_state_like(state)
         losses = []
         for client_id in active_clients:
-            grad, loss = train_client(
+            grad, loss, batches = train_client(
                 state, train_dataset, clients[client_id], args, repo_cfg, fabric
             )
+            checkpoint.client(batches)
             weight = client_weight(
                 client_id, active_clients, clients, total_samples, args.aggregation
             )
             add_scaled_state(aggregate_update, grad, weight)
             losses.append(loss)
+        checkpoint.uploads(state, len(active_clients))
         state = state_plus_update(state, aggregate_update)
         train_loss = float(np.mean(losses)) if losses else float("nan")
         if should_evaluate(round_idx, args):
@@ -746,6 +760,7 @@ def run_fedavg(
             )
             history.extend(rows)
             print_round(rows[0], args.rounds)
+        checkpoint.save(round_idx, state, history)
     return history
 
 
@@ -766,20 +781,30 @@ def run_ppbc(
     total_samples = sum(len(clients[client_id]) for client_id in active_clients)
     rng = np.random.default_rng(args.seed + int(alpha * 1000) + 17)
     final_errors = {client_id: zero_state_like(state) for client_id in active_clients}
-    history = evaluate_state(
-        state,
-        test_dataset,
-        test_records,
-        args,
-        repo_cfg,
-        fabric,
-        datamodule,
-        "ppbc",
-        alpha,
-        0,
-    )
+    checkpoint = RoundCheckpoint(args, "ppbc", alpha)
+    saved = checkpoint.load(rng)
+    start_round = 0
+    if saved is not None:
+        state = saved["state"]
+        history = saved["history"]
+        start_round = saved["round"]
+        final_errors = saved["final_errors"]
+    else:
+        history = evaluate_state(
+            state,
+            test_dataset,
+            test_records,
+            args,
+            repo_cfg,
+            fabric,
+            datamodule,
+            "ppbc",
+            alpha,
+            0,
+        )
+        checkpoint.save(0, state, history, rng, final_errors)
 
-    for round_idx in range(1, args.rounds + 1):
+    for round_idx in range(start_round + 1, args.rounds + 1):
         working_state = clone_state_cpu(state)
         if round_idx > 1:
             for client_id in active_clients:
@@ -799,7 +824,7 @@ def run_ppbc(
             selected_clients = set(select_clients(rng, epoch_clients, args.iter_k))
             aggregate_update = zero_state_like(state)
             for client_id in active_clients:
-                grad, loss = train_client(
+                grad, loss, batches = train_client(
                     working_state,
                     train_dataset,
                     clients[client_id],
@@ -807,6 +832,7 @@ def run_ppbc(
                     repo_cfg,
                     fabric,
                 )
+                checkpoint.client(batches)
                 round_losses.append(loss)
                 base_weight = client_weight(
                     client_id, active_clients, clients, total_samples, args.aggregation
@@ -822,10 +848,12 @@ def run_ppbc(
                     final_errors[client_id],
                     args.gamma * args.theta * 0.5,
                 )
+            checkpoint.uploads(state, sum(q_mask[c] > 0 for c in selected_clients))
             working_state = state_plus_update(working_state, aggregate_update)
             if iter_idx == args.ppbc_iterations - 1:
                 final_errors = current_errors
 
+        checkpoint.uploads(state, len(active_clients), correction=True)
         state = working_state
         train_loss = float(np.mean(round_losses)) if round_losses else float("nan")
         if should_evaluate(round_idx, args):
@@ -844,6 +872,7 @@ def run_ppbc(
             )
             history.extend(rows)
             print_round(rows[0], args.rounds)
+        checkpoint.save(round_idx, state, history, rng, final_errors)
     return history
 
 
@@ -949,6 +978,10 @@ def main() -> None:
             "--eval-batch-size must be 1 to match the repository test.py metric semantics."
         )
     output_dir = Path(args.output_dir)
+    if args.resume and (len(args.methods) != 1 or len(args.alphas) != 1):
+        raise ValueError("Resume requires exactly one method and one alpha")
+    if output_dir.exists() and any(output_dir.iterdir()) and not args.resume:
+        raise FileExistsError(f"Refusing to overwrite existing output: {output_dir}")
     log_path = setup_run_log(output_dir)
     print(f"Logging to {log_path}", flush=True)
     check_device(args)
@@ -997,6 +1030,20 @@ def main() -> None:
     )
     config["metric_config_file"] = METRIC_CONFIG_FILE.as_posix()
     config["metric_config"] = OmegaConf.to_container(repo_cfg.metric, resolve=True)
+    signature_config = {k: v for k, v in config.items()
+                        if k not in {"resume", "output_dir", "cuda_visible_devices"}}
+    signature_config["train_files"] = [r.path for r in train_records]
+    signature_config["test_files"] = [r.path for r in test_records]
+    signature_config["repo_cfg"] = OmegaConf.to_container(repo_cfg, resolve=True)
+    signature_config["source_sha256"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    args._run_signature = hashlib.sha256(
+        json.dumps(signature_config, sort_keys=True).encode()
+    ).hexdigest()
+
+    if args.resume:
+        saved_config = torch.load(args.resume, map_location="cpu", weights_only=False)
+        if saved_config["signature"] != args._run_signature:
+            raise ValueError("Resume configuration/data/source does not match checkpoint")
     (output_dir / "config.json").write_text(
         json.dumps(config, indent=2), encoding="utf-8"
     )

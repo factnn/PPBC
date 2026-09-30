@@ -1,6 +1,6 @@
 # repro/ —— leiyao 那套联邦学习，我把它跑起来并补上缺失产物
 
-> 单卡启动与论文核对见 [SINGLE_GPU.md](SINGLE_GPU.md)，入口为 `run_single_gpu.sh`。历史 GPU 模板不代表已完成 GPU 验证；正式长跑前需补 checkpoint/resume。`q_m=1` 仍可通过客户端选择实现部分参与。
+> 单卡启动与论文核对见 [SINGLE_GPU.md](SINGLE_GPU.md)，入口为 `run_single_gpu.sh`。已完成单卡验证，见 [本次结果](SINGLE_GPU_RESULTS.md)；历史 GPU 大规模模板尚未验证；正式长跑前需补 checkpoint/resume。`q_m=1` 仍可通过客户端选择实现部分参与。
 
 **为什么有这个目录**：leiyao 已离职，他做的 FL 适配只剩代码，pilot 的原始产物
 （`history.csv` / `summary.csv` / `central_checkpoint_diagnosis.csv` / 绘图脚本）都不在机器上

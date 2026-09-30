@@ -5,6 +5,7 @@ import math
 import os
 import random
 import sys
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -914,13 +915,32 @@ def final_summary(history: list[dict[str, float | int | str]], rounds: int):
     ]
 
 
+def load_mean_std(data_root: Path) -> dict:
+    path = data_root / "mean_std.json"
+    stats = json.loads(path.read_text(encoding="utf-8"))
+    # DrivAerNet++ stores only physical-field statistics. Keep the original
+    # geometric scaling when coordinates are not included (unlike DrivAerStar).
+    if "centroid" not in stats:
+        stats["centroid"] = {"mean": [0.0], "std": [4.0]}
+        print("[normalization] centroid absent; using original coordinate scale 4.0", flush=True)
+    for field, width in (("pressure", 1), ("wss", 3), ("centroid", 3)):
+        for name in ("mean", "std"):
+            values = np.asarray(stats[field][name], dtype=float)
+            if values.size not in (1, width) or values.ndim > 1 or not np.isfinite(values).all():
+                raise ValueError(f"Invalid {field}.{name} in {path}")
+            if name == "std" and (values <= 0).any():
+                raise ValueError(f"Non-positive {field}.std in {path}")
+    return stats
+
+
 def main() -> None:
+    started = time.perf_counter()
     args = parse_args()
     # [patch] 归一化统计量以数据根目录的 mean_std.json 为准（训练与指标共用一套，§9）
     _mean_std_path = Path(args.data_root) / "mean_std.json"
     if _mean_std_path.exists():
         global MEAN_STD_DICT
-        MEAN_STD_DICT = json.loads(_mean_std_path.read_text(encoding="utf-8"))
+        MEAN_STD_DICT = load_mean_std(Path(args.data_root))
         print(f"[patch] 已从 {_mean_std_path} 载入归一化统计量", flush=True)
     if not set(args.methods).issubset({"fedavg", "ppbc"}):
         raise ValueError("--methods must contain only fedavg and/or ppbc")
@@ -932,6 +952,8 @@ def main() -> None:
     log_path = setup_run_log(output_dir)
     print(f"Logging to {log_path}", flush=True)
     check_device(args)
+    if args.device == "cuda":
+        torch.cuda.reset_peak_memory_stats()
     repo_cfg = load_repo_cfg(args)
     fabric = make_fabric(args)
     fabric.launch()
@@ -1040,6 +1062,21 @@ def main() -> None:
     write_csv(output_dir / "history.csv", all_history)
     write_csv(output_dir / "summary.csv", final_summary(all_history, args.rounds))
     write_csv(output_dir / "distribution_summary.csv", distribution_rows)
+    runtime = {
+        "elapsed_seconds": time.perf_counter() - started,
+        "torch_version": torch.__version__,
+        "cuda_version": torch.version.cuda,
+        "device": args.device,
+    }
+    if args.device == "cuda":
+        torch.cuda.synchronize()
+        runtime.update({
+            "gpu_name": torch.cuda.get_device_name(),
+            "peak_allocated_bytes": torch.cuda.max_memory_allocated(),
+            "peak_reserved_bytes": torch.cuda.max_memory_reserved(),
+        })
+    (output_dir / "runtime.json").write_text(json.dumps(runtime, indent=2), encoding="utf-8")
+    print(f"Runtime: {runtime}", flush=True)
     print(f"Wrote results to {output_dir}", flush=True)
 
 

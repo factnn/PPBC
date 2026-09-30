@@ -4,7 +4,7 @@
 
 一张 GPU 可以串行模拟多个客户端：`train_client` 每次创建并训练一个客户端模型，返回 CPU 上的模型差分；聚合状态及每个客户端的校正状态放在 CPU。无需为三个或六个客户端分别准备 GPU。真实多机器网络通信并未实现，此处是算法仿真。
 
-2026-09-30 实测当前 `fornax` 的 `nvidia-smi` 无法连接驱动；既有 Python 3.10 环境中 PyTorch 为 `2.8.0.dev20250414+cu128`，`torch.cuda.is_available()` 为 false，设备数为 0。因此本次尚未完成 GPU 实跑，不能给出实测显存或速度。
+2026-09-30 纠正：沙箱内 `nvidia-smi` 和 PyTorch 看不到 GPU；经许可在沙箱外确认 `fornax` 有 8 张 RTX 3090，CUDA 可用。既有 Python 3.10 环境中 PyTorch 为 `2.8.0.dev20250414+cu128`。运行前检查卡占用，本次选择空闲的物理 GPU 5；不要将沙箱限制误判为主机无卡。
 
 ## 启动
 
@@ -28,7 +28,7 @@ PYTHON=/mnt/cfd/yichen/miniconda3/envs/zpy_cfd/bin/python \
 
 smoke 使用 3 个纯车身类别客户端、18 个训练例、3 个测试例、每客户端最多 1 个 batch、1000 个训练点、2 个外层周期 × 2 次内部迭代。两周期用于实际经过上一周期误差反馈的路径。每内部迭代选 1 个客户端上传，3 个客户端都参与计算。评估始终使用全量点，batch size 为 1。
 
-结果写到独立的 `repro/results/single_gpu_*`，含 `config.json`、`run.log`、`history.csv`、`summary.csv` 及客户端划分。检查损失和指标有限、客户端非空、物理量及归一化正确，并在目标卡上记录峰值显存和时间。全点评估可能比小样本训练更占显存，不能仅根据训练点数判断容量。
+结果写到独立的 `repro/results/single_gpu_*`，含 `config.json`、`run.log`、`history.csv`、`summary.csv`、`runtime.json` 及客户端划分。`runtime.json` 记录进程内耗时和 PyTorch 峰值 allocated/reserved 显存（不包含驱动的全部额外开销）。检查损失和指标有限、客户端非空、物理量及归一化正确，并在目标卡上记录峰值显存和时间。全点评估可能比小样本训练更占显存，不能仅根据训练点数判断容量。
 
 ## 论文与代码核对
 
@@ -50,3 +50,11 @@ smoke 使用 3 个纯车身类别客户端、18 个训练例、3 个测试例、
 当前 FedAvg 每外层轮训练所有客户端一次；PPBC 每外层轮会训练所有客户端 `ppbc_iterations` 次。因此相同 `rounds` 的两条曲线并非等计算预算。论文实验要求相同采样规则，而当前 FedAvg 是全客户端聚合。正式结论需要补齐匹配的部分参与基线，并分别统计本地优化步数、上传更新次数（包含周期结束的代理量上传）与时间。
 
 主实验脚本目前不保存模型 checkpoint、不支持 resume，CSV 也主要在整个流程结束后写出。先做短 smoke/pilot；长时正式实验前应补齐 checkpoint、恢复与增量记录。现有脚本不能用来生成可恢复的百轮正式训练任务。
+
+## 本次修复与验证
+
+DrivAerNet++ 的 `mean_std.json` 只提供 pressure/wss。旧补丁整份替换字典会丢失 centroid，触发 `KeyError`。现在保留物理场统计量，仅在 centroid 缺失时使用原几何缩放 4.0；DrivAerStar 提供的坐标统计量原样保留。不修改原始数据文件。新增检查拒绝零、负值和非有限标准差。
+
+从 `repro/CFD/` 执行 `python -m unittest discover -s tests -v`，四项归一化回归测试通过；另已读取实际 DrivAerNet++ 样本确认归一化后为有限数值。
+
+单卡 smoke 和 pilot 均已通过，具体指标与实测资源见 [SINGLE_GPU_RESULTS.md](SINGLE_GPU_RESULTS.md)。

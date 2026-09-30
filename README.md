@@ -1,4 +1,7 @@
 # Code for work A Robust Training Method for Federated Learning with Partial Participation
+
+> **CFD adaptation fork:** automotive CFD development is on branch `cfd-adaptation`, under `repro/`. See [CFD_ADAPTATION.md](CFD_ADAPTATION.md) for provenance, runtime requirements, and maintenance instructions. The original upstream documentation follows.
+
 **Experimental Setup for the Paper**
 
 This repository includes all experiments and implementations required for the PPBC_ICML study.

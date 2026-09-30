@@ -1,0 +1,9 @@
+_target_: util.cfd_utils.CFDLossWrapper
+
+mse_loss_pressure: 1.0
+mse_loss_wss: 1.0
+cos_dist_loss_pressure_dir: 0.0
+cos_dist_loss_wss_dir: 0.0
+mse_loss_pressure_partial: 0.0
+mse_loss_wss_partial: 0.0
+orthog_loss_wss_dir: 0.0

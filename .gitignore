@@ -8,3 +8,25 @@ __pycache__/
 .vscode/
 *.txt
 *.png
+
+# CFD local datasets, experiment outputs, and compiled dependencies
+/repro/data/
+/repro/data_*/
+/repro/results/
+/repro/CFD/dataset/
+*.so
+*.pyc
+*.pyo
+*.pth
+*.pt
+*.ckpt
+*.onnx
+*.safetensors
+*.npy
+*.npz
+*.vtk
+*.vtu
+*.pdf
+*.log
+.env
+.env.*

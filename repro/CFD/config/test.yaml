@@ -1,0 +1,31 @@
+defaults:
+  - hydra: default
+  - datamodule: point_cloud_datamodule
+  - loss: cfd_loss_wrapper
+  - metric: cfd_metric_wrapper
+  - model: transformer
+  - _self_
+
+log_dir: "log/test/${now:%Y%m%d_%H%M%S}"
+
+seed: 42
+devices: [0]
+precision: "bf16-mixed"
+
+datamodule:
+  train_split_file: "dataset/DrivAerNetPP/split/train_split.json"
+  test_split_file: "dataset/DrivAerNetPP/split/test_split.json"
+
+metric:
+  mean_std_file: "dataset/DrivAerNetPP/mean_std.json"
+
+ckpt_file: ""
+
+save_results: false
+
+dataloader:
+  batch_size: 1
+  num_workers: 8
+  pin_memory: false
+  shuffle: false
+  drop_last: false

@@ -1,0 +1,3 @@
+_target_: util.cfd_utils.CFDMetricWrapper
+
+mean_std_file: "mean_std.json"

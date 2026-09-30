@@ -1,0 +1,17 @@
+_target_: datamodule.point_cloud_datamodule.PointCloudDataModule
+
+mean_std_dict:
+  pressure:
+    mean: [0.0]
+    std: [500.0]
+  wss:
+    mean: [0.0]
+    std: [1.5]
+  centroid:
+    mean: [0.0]
+    std: [4.0]
+
+train_split_file: ""
+test_split_file: ""
+train_downsample_size: -1
+test_downsample_size: -1
